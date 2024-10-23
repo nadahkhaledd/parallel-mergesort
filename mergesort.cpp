@@ -1,200 +1,294 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <sys/time.h>
 
+#include <sys/time.h>
 #include <iostream>
 #include <algorithm>
 
 #include <omp.h>
-
-
 #include <cstdlib>
 #include <cstdio>
 
 #include <cmath>
 #include <ctime>
 #include <cstring>
+#include <cctype>
 
 using namespace std;
 
+// Machine-specific settings
+#define CACHE_LINE 64        
+#define MIN_PARALLEL_SIZE 1024   
+#define MAX_DEPTH 3  
 
+/*
+    @author nada-khaled
+*/
 
 /**
-  * helper routine: check if array is sorted correctly
-  */
-bool isSorted(int ref[], int data[], const size_t size){
-	sort(ref, ref + size);
-	for (size_t idx = 0; idx < size; ++idx){
-		if (ref[idx] != data[idx]) {
-			return false;
-		}
-	}
-	return true;
+ * Verifies if the array is correctly sorted
+ * @param ref Original array (sorted for comparison)
+ * @param data Array to verify
+ * @param size Length of the arrays
+ * @return true if correctly sorted, false otherwise
+ */
+bool isSorted(int ref[], int data[], const size_t size) {
+    sort(ref, ref + size);
+    for (size_t idx = 0; idx < size; ++idx) {
+        if (ref[idx] != data[idx]) {
+            return false;
+        }
+    }
+    return true;
 }
 
-
 /**
-  * sequential merge step (straight-forward implementation)
-  */
-// TODO: cut-off could also apply here (extra parameter?)
-// TODO: optional: we can also break merge in two halves
+ * sequential merge step (straight-forward implementation)
+ * @param out Output array where merged result will be stored
+ * @param in Input array with two sorted sections
+ * @param begin1 Start index of first sorted section
+ * @param end1 End index of first sorted section
+ * @param begin2 Start index of second sorted section
+ * @param end2 End index of second sorted section
+ * @param outBegin Starting position in output merged array
+ */
 void MsMergeSequential(int *out, int *in, long begin1, long end1, long begin2, long end2, long outBegin) {
-	long left = begin1;
-	long right = begin2;
+    long left = begin1;    
+    long right = begin2;   
+    long idx = outBegin;   
 
-	long idx = outBegin;
+    while (left < end1 && right < end2) {
+        if (in[left] <= in[right]) {
+            out[idx] = in[left];
+            left++;
+        } else {
+            out[idx] = in[right];
+            right++;
+        }
+        idx++;
+    }
 
-	while (left < end1 && right < end2) {
-		if (in[left] <= in[right]) {
-			out[idx] = in[left];
-			left++;
-		} else {
-			out[idx] = in[right];
-			right++;
-		}
-		idx++;
-	}
+    while (left < end1) {
+        out[idx] = in[left];
+        left++, idx++;
+    }
 
-	while (left < end1) {
-		out[idx] = in[left];
-		left++, idx++;
-	}
-
-	while (right < end2) {
-		out[idx] = in[right];
-		right++, idx++;
-	}
+    while (right < end2) {
+        out[idx] = in[right];
+        right++, idx++;
+    }
 }
 
+/**
+ * Sequential implementation of MergeSort
+ * @param array Array to be sorted
+ * @param tmp Temporary array 
+ * @param inplace to sort array inplace
+ * @param begin Start index of section to sort
+ * @param end End index of section to sort
+ */
 void MsSequential(int *array, int *tmp, bool inplace, long begin, long end) {
-	cout << "Running MsSequential on range [" << begin << ", " << end << "]" << endl;
-
     if (begin < (end - 1)) {
-        const long half = (begin + end) / 2;
+        const long half = (begin + end) / 2;  
         MsSequential(array, tmp, !inplace, begin, half);
         MsSequential(array, tmp, !inplace, half, end);
+        
         if (inplace) {
             MsMergeSequential(array, tmp, begin, half, half, end, begin);
         } else {
             MsMergeSequential(tmp, array, begin, half, half, end, begin);
         }
     } else if (!inplace) {
-        tmp[begin] = array[begin];
+        tmp[begin] = array[begin]; 
     }
 }
 
 /**
-  * sequential MergeSort
-  */
-// TODO: remember one additional parameter (depth)
-// TODO: recursive calls could be taskyfied
-// TODO: task synchronization also is required
-void MsParallel(int *array, int *tmp, bool inplace, long begin, long end, int depth) {
-	const int CUT_OFF = 4;
-	if (begin < (end - 1)) {
-		const long half = (begin + end) / 2;
-		if (depth < CUT_OFF) {
-		cout << "Creating tasks for parallel execution on range [" << begin << ", " << end << "]" << std::endl;
-		#pragma omp task shared(array, tmp) if(end - begin > (1<<12))
-		MsParallel(array, tmp, !inplace, begin, half, depth +1);
+ * Parallel implementation of MergeSort using OpenMP 
+ * @param array Array to be sorted
+ * @param tmp Temporary array
+ * @param inplace to sort array inplace
+ * @param begin Start index of section to sort
+ * @param end End index of section to sort
+ * @param depth Current recursion depth for controlling parallel tasks
+ */
+void MsMergeParallel(int *array, int *tmp, bool inplace, long begin, long end, int depth) {
+    const long size = end - begin;
+    
+    // Switch to sequential sort for small arrays
+    if (size < MIN_PARALLEL_SIZE || depth >= MAX_DEPTH) {
+        if (inplace) {
+            sort(array + begin, array + end);
+        } else {
+            sort(array + begin, array + end);
+            memcpy(tmp + begin, array + begin, size * sizeof(int));
+        }
+        return;
+    }
 
-		#pragma omp task shared(array, tmp) if(end - begin > (1<<12))
-		MsParallel(array, tmp, !inplace, half, end, depth + 1);
+    if (begin < (end - 1)) {
+        const long half = (begin + end) / 2;
+        
+        // Create parallel tasks for each half (Divide)
+        #pragma omp task shared(array, tmp) if(depth < 2)
+        MsMergeParallel(array, tmp, !inplace, begin, half, depth + 1);
+        
+        #pragma omp task shared(array, tmp) if(depth < 2)
+        MsMergeParallel(array, tmp, !inplace, half, end, depth + 1);
+        
+        // wait to merge tasks
+        #pragma omp taskwait
 
-		#pragma omp taskwait
-		}
-		else {
-            // Fallback to sequential processing when depth limit is reached
-			cout << "Fallback to sequential execution on range [" << begin << ", " << end << "]" << std::endl;
-
-            MsSequential(array, tmp, !inplace, begin, half);
-            MsSequential(array, tmp, !inplace, half, end);
-        }	
-
-
-		if (inplace) {
-			MsMergeSequential(array, tmp, begin, half, half, end, begin);
-		} else {
-			MsMergeSequential(tmp, array, begin, half, half, end, begin);
-		}
-	} else if (!inplace) {
-		tmp[begin] = array[begin];
-	}
+        // Merge final parts (Conquer)
+        if (inplace) {
+            MsMergeSequential(array, tmp, begin, half, half, end, begin);
+        } else {
+            MsMergeSequential(tmp, array, begin, half, half, end, begin);
+        }
+    }
 }
-
 
 /**
-  * Serial MergeSort
-  */
-// TODO: this function should create the parallel region
-// TODO: good point to compute a good depth level (cut-off)
-void MsSerial(int *array, int *tmp, const size_t size) {
-
-   // TODO: parallel version of MsSequential will receive one more parameter: 'depth' (used as cut-off)
-   #pragma omp parallel  // Create a parallel region
+ * parallel merge sort execution
+ * @param array Array to be sorted
+ * @param tmp Temporary array
+ * @param size Length of the array
+ */
+void MsParallel(int *array, int *tmp, const size_t size) {
+    // Adjust number of threads based on array size
+    int num_threads = omp_get_max_threads();
+    if (size < MIN_PARALLEL_SIZE * 4) {
+        num_threads = std::min(num_threads, 2);
+    }
+    
+    // Create parallel region with adjusted thread number
+    #pragma omp parallel num_threads(num_threads)
     {
-		#pragma omp single
-		{
-			cout << "Starting parallel region..." << std::endl;
-			MsParallel(array, tmp, true, 0, size, 0);
-		}
-		
-	}
+        #pragma omp single // to ensure calling once by first thread
+        {
+            MsMergeParallel(array, tmp, true, 0, size, 0); // depth=0 as first step to increment one by one
+        }
+    }
 }
 
+/**
+ * Calculates speedup between sequential and  parallel implementation
+ * @param sequentialTime Sequential sort time
+ * @param parallelTime Parallel sort time
+ */
+void calculateSpeedup(double sequentialTime, double parallelTime) {
+    if (parallelTime > 0) {
+        double speedup = sequentialTime / parallelTime;
+        printf("Speedup: %f\n", speedup);
+    } else {
+        printf("Speedup calculation error: Parallel time = 0.\n");
+    }
+}
 
-/** 
-  * @brief program entry point
-  */
+/**
+ * check for sequential mode choices from terminal
+ * @param mode Execution mode
+ * @return boolean if mode matches the indicated modes
+ */
+bool isSequentialMode(const std::string& mode) {
+    std::vector<std::string> sequentialModes = {"sequential", "seq", "s"};
+    return std::find(sequentialModes.begin(), sequentialModes.end(), mode) != sequentialModes.end();
+}
+
+/**
+ * check for parallel mode choices from terminal
+ * @param mode Execution mode
+ * @return boolean if mode matches the indicated modes
+ */
+bool isParallelMode(const std::string& mode) {
+    std::vector<std::string> sequentialModes = {"parallel", "par", "p"};
+    return std::find(sequentialModes.begin(), sequentialModes.end(), mode) != sequentialModes.end();
+}
+
+/**
+ * Entry point of the program
+ */
 int main(int argc, char* argv[]) {
-	// variables to measure the elapsed time
-	struct timeval t1, t2;
-	double etime;
+    struct timeval t1, t2;
+    double sequentialTime = 0.0, parallelTime = 0.0;
 
-	// expect one command line arguments: array size
-	if (argc != 2) {
-		printf("Usage: MergeSort.exe <array size> \n");
-		printf("\n");
-		return EXIT_FAILURE;
-	}
-	else {
-		const size_t stSize = strtol(argv[1], NULL, 10);
-		int *data = (int*) malloc(stSize * sizeof(int));
-		int *tmp = (int*) malloc(stSize * sizeof(int));
-		int *ref = (int*) malloc(stSize * sizeof(int));
+    // Validate command line arguments
+    if (argc != 3) {
+        printf("Usage: MergeSort.exe <array size> <mode: seq, par, both>\n");
+        return EXIT_FAILURE;
+    }
 
-		printf("Initialization...\n");
+    const size_t stSize = strtol(argv[1], NULL, 10);
+    string mode = argv[2];
+    
+    
+    int *data = (int*) aligned_alloc(CACHE_LINE, stSize * sizeof(int));
+    int *tmp = (int*) aligned_alloc(CACHE_LINE, stSize * sizeof(int));
+    int *ref = (int*) aligned_alloc(CACHE_LINE, stSize * sizeof(int));
 
-		srand(95);
-		for (size_t idx = 0; idx < stSize; ++idx){
-			data[idx] = (int) (stSize * (double(rand()) / RAND_MAX));
-		}
-		copy(data, data + stSize, ref);
+    
+    if (!data || !tmp || !ref) {
+        printf("Memory allocation failed!\n");
+        return EXIT_FAILURE;
+    }
 
-		double dSize = (stSize * sizeof(int)) / 1024 / 1024;
-		printf("Sorting %zu elements of type int (%f MiB)...\n", stSize, dSize);
+    printf("Initialization...\n");
 
-		gettimeofday(&t1, NULL);
-		MsSerial(data, tmp, stSize);
-		gettimeofday(&t2, NULL);
+    // Initialize array with random values
+    srand(95);  
+    for (size_t idx = 0; idx < stSize; ++idx) {
+        data[idx] = (int)(stSize * (double(rand()) / RAND_MAX));
+    }
+    copy(data, data + stSize, ref);
 
-		etime = (t2.tv_sec - t1.tv_sec) * 1000 + (t2.tv_usec - t1.tv_usec) / 1000;
-		etime = etime / 1000;
+    // Calculate and display array size in MiB
+    double dSize = (stSize * sizeof(int)) / 1024.0 / 1024.0;
+    printf("Sorting %zu elements of type int (%f MiB)...\n", stSize, dSize);
 
-		printf("done, took %f sec. Verification...", etime);
-		if (isSorted(ref, data, stSize)) {
-			printf(" successful.\n");
-		}
-		else {
-			printf(" FAILED.\n");
-		}
+    /*
+        Execution options:
+            1. Sequentially: run only original sequential merge sort. by sending run argument (e.g. s).
+            2. Parallel: run only added parallel implementation for merge sort. by sending run argument (e.g. p).
+            3. run sequential and parallel together and calculate speedup for comparison. by sending run argument "both".
+    */
 
-		free(data);
-		free(tmp);
-		free(ref);
-	}
+    // Run sequential sort 
+    if (isSequentialMode(mode) || mode == "both") {
+        gettimeofday(&t1, NULL);
+        MsSequential(data, tmp, true, 0, stSize);
+        gettimeofday(&t2, NULL);
+        sequentialTime = (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
+        sequentialTime /= 1000.0;
+        printf("Sequential execution completed in %f sec.\n", sequentialTime);
+    }
 
-	return EXIT_SUCCESS;
+    // Run parallel sort 
+    if (isParallelMode(mode) || mode == "both") {
+        copy(ref, ref + stSize, data);  // Reset array to original state
+        gettimeofday(&t1, NULL);
+        MsParallel(data, tmp, stSize);
+        gettimeofday(&t2, NULL);
+        parallelTime = (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
+        parallelTime /= 1000.0;
+        printf("Parallel execution completed in %f sec.\n", parallelTime);
+    }
+
+    // Calculate speedup for both modes
+    if (mode == "both") {
+        calculateSpeedup(sequentialTime, parallelTime);
+    }
+
+    // Verify sorting result
+    printf("Verification...");
+    if (isSorted(ref, data, stSize)) {
+        printf(" successful.\n");
+    } else {
+        printf(" FAILED.\n");
+    }
+
+    free(data);
+    free(tmp);
+    free(ref);
+    return EXIT_SUCCESS;
 }
