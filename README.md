@@ -6,26 +6,28 @@
 
 #### Commands: 
         > make
-        > ./mergesort-co <number> <mode: s, p, both>
+        > ./mergesort-co <number-elements> <mode: s, p, both> <number-threads>
 
 
 #### Output examples: 
 ##### 1
-   > ./mergesort-co 1000 both
+   > ./mergesort-co 10000 both 4
 
         Initialization...
-        Sorting 1000 elements of type int (0.003815 MiB)...
-        Sequential execution completed in 0.000154 sec.
-        Parallel execution completed in 0.000425 sec.
-        Speedup: 0.362353
+        Sorting 10000 elements of type int (0.038147 MiB)...
+        Sequential execution completed in 0.002502 sec.
+        Start parallel implementation with  4 threads.
+        Parallel execution completed in 0.010697 sec.
+        Speedup: 0.233897
         Verification... successful.
 
 ##### 2
-   > ./mergesort-co 200000 par
+   > ./mergesort-co 200000 p 5
 
         Initialization...
-        Sorting 200000 elements of type int (0.762939 MiB)...
-        Parallel execution completed in 0.049664 sec.
+        Sorting 2000000 elements of type int (7.629395 MiB)...
+        Start parallel implementation with  5 threads.
+        Parallel execution completed in 0.198699 sec.
         Verification... successful.
 
 ##### 3

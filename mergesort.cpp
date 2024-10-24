@@ -20,7 +20,7 @@ using namespace std;
 // Machine-specific settings
 #define CACHE_LINE 64        
 #define MIN_PARALLEL_SIZE 1024   
-#define MAX_DEPTH 3  
+#define MAX_DEPTH 5 // 64 tasks  
 
 /*
     @author nada-khaled
@@ -115,9 +115,14 @@ void MsSequential(int *array, int *tmp, bool inplace, long begin, long end) {
  */
 void MsMergeParallel(int *array, int *tmp, bool inplace, long begin, long end, int depth) {
     const long size = end - begin;
+
+	/*#pragma omp critical
+    {
+        cout << "Creating task at depth " << depth << " for size " << size << endl;
+    }*/
     
     // Switch to sequential sort for small arrays
-    if (size < MIN_PARALLEL_SIZE || depth >= MAX_DEPTH) {
+    if (size < MIN_PARALLEL_SIZE/(1 << depth) || depth >= MAX_DEPTH) {
         if (inplace) {
             sort(array + begin, array + end);
         } else {
@@ -131,10 +136,10 @@ void MsMergeParallel(int *array, int *tmp, bool inplace, long begin, long end, i
         const long half = (begin + end) / 2;
         
         // Create parallel tasks for each half (Divide)
-        #pragma omp task shared(array, tmp) if(depth < 2)
+        #pragma omp task shared(array, tmp) if(size > MIN_PARALLEL_SIZE/(1 << depth))
         MsMergeParallel(array, tmp, !inplace, begin, half, depth + 1);
         
-        #pragma omp task shared(array, tmp) if(depth < 2)
+        #pragma omp task shared(array, tmp) if(size > MIN_PARALLEL_SIZE/(1 << depth))
         MsMergeParallel(array, tmp, !inplace, half, end, depth + 1);
         
         // wait to merge tasks
@@ -155,13 +160,15 @@ void MsMergeParallel(int *array, int *tmp, bool inplace, long begin, long end, i
  * @param tmp Temporary array
  * @param size Length of the array
  */
-void MsParallel(int *array, int *tmp, const size_t size) {
-    // Adjust number of threads based on array size
-    int num_threads = omp_get_max_threads();
+void MsParallel(int *array, int *tmp, const size_t size, int num_threads) {
+    //Adjust number of threads based on array size
+    //int num_threads = omp_get_max_threads();
+
     if (size < MIN_PARALLEL_SIZE * 4) {
         num_threads = std::min(num_threads, 2);
     }
-    
+
+    cout << "Start parallel implementation with  " << num_threads << " threads.\n";
     // Create parallel region with adjusted thread number
     #pragma omp parallel num_threads(num_threads)
     {
@@ -213,14 +220,26 @@ int main(int argc, char* argv[]) {
     struct timeval t1, t2;
     double sequentialTime = 0.0, parallelTime = 0.0;
 
-    // Validate command line arguments
-    if (argc != 3) {
-        printf("Usage: MergeSort.exe <array size> <mode: seq, par, both>\n");
-        return EXIT_FAILURE;
-    }
-
     const size_t stSize = strtol(argv[1], NULL, 10);
     string mode = argv[2];
+
+	// optional argument
+	int threads = 1; // Default to 1 thread (sequential)
+
+	// Validate command line arguments
+	// Check if the number of threads argument is provided and if we are in parallel or both mode
+    if ((isParallelMode(mode) || mode == "both") && argc == 4) {
+        threads = strtol(argv[3], NULL, 10);
+        if (threads < 2) {
+            cerr << "Invalid number of threads. Please ensure the number of threads is greater than 2.\n";
+            return EXIT_FAILURE;
+        }
+    }
+
+    if (stSize < 2) {
+        cerr << "Invalid array size. Please ensure array size is greater than 2.\n";
+        return EXIT_FAILURE;
+    }
     
     
     int *data = (int*) aligned_alloc(CACHE_LINE, stSize * sizeof(int));
@@ -267,7 +286,7 @@ int main(int argc, char* argv[]) {
     if (isParallelMode(mode) || mode == "both") {
         copy(ref, ref + stSize, data);  // Reset array to original state
         gettimeofday(&t1, NULL);
-        MsParallel(data, tmp, stSize);
+        MsParallel(data, tmp, stSize, threads);
         gettimeofday(&t2, NULL);
         parallelTime = (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
         parallelTime /= 1000.0;
